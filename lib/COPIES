@@ -20,6 +20,7 @@ agent.js: chat newspace shepherdr-settings
 settings.js: chat newspace shepherdr-settings
 dot.js: chat jump tasks
 core/tasklists.js: jump tasks
+core/fuzzy.js: jump
 core/chat-log.js: chat
 core/chat-view.js: chat
 core/screens.js: chat
