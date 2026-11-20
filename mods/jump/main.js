@@ -1,10 +1,12 @@
 // Jump (Ctrl+K, as Shepherdr's ⌘K): one box that finds a space, a task, an artifact or a machine and
 // goes there. Opened with mod.open:jump (again closes it), a popup at the top of the window.
-// Type to filter: every word typed must be in the item somewhere, any case (Shepherdr's
-// matches()). Tasks by id, title, status line, summary and where they ran, Done and archived
+// Type to filter, fzf style (core/fuzzy.js): every word typed is found in the item, its letters
+// in order though not always together, and a word of 4 letters or more may have one slip in it.
+// Tasks by id, title, status line, summary and where they ran, Done and archived
 // ones too (archived only once something is typed); artifacts by title, the task that made them
-// and their folder; spaces by name, folder and machine. Each group newest first, so with nothing
-// typed the latest work is on top. ↑/↓ and Enter, or a click, go:
+// and their folder; spaces by name, folder and machine. With nothing typed each group is newest
+// first, so the latest work is on top; with words typed, best match first. ↑/↓ (or Ctrl+N/P) and
+// Enter, or a click, go:
 //   space     space.select
 //   machine   its first space
 //   task      its worker's chat inside the Tasks panel (chat/panel.js's drill-in); a task with no
@@ -32,6 +34,13 @@ import { spaceName } from "./core/spaces.js";
 import { openViewer, showViewer, chatArea } from "./artview.js";
 import { showInSidebar, hasSidebarView } from "./artifact-sidebar.js";
 import { TEXT, RADIUS } from "./ui.js";
+import { fuzzyScore } from "./core/fuzzy.js";
+
+// The search box keeps ↑, ↓ and Enter for itself (its own key bindings run before any
+// on_key_down above it). These bindings, in our "jump" context, turn them into the list's
+// actions instead (on_action in draw()), as the chat's "/" list does. Installed once: the keymap
+// is the app's.
+let bound = false;
 
 // Our layout with the Tasks panel, for a task picked where the shown one has none.
 const TASKS_LAYOUT = "shepherdr";
@@ -63,11 +72,6 @@ function autoPrefix(folder) {
   return p.toUpperCase();
 }
 
-// Every word typed is in one of these, any case.
-function matches(q, ...fields) {
-  const all = fields.filter((f) => f !== undefined && f !== null && f !== "").join(" ").toLowerCase();
-  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => all.includes(w));
-}
 
 const machineOf = (address) => (address?.includes("/") ? address.split("/")[0] : null);
 const machineName = (m) => m ?? "This computer";
@@ -119,6 +123,20 @@ export default class Jump extends View {
     this.loading = new Set();
     this.more = new Set();  // groups showing every row
     this.sel = null;        // the selected row's key
+    this.memo = { q: null, scores: new Map() }; // fuzzy scores for the query typed, by the fields matched
+    if (!bound) {
+      bound = true;
+      const keys = [];
+      for (const ctx of ["Input", "TextArea", "Textarea"]) {
+        keys.push({ keystroke: "down", action: "jump_down", context: `jump > ${ctx}` },
+          { keystroke: "up", action: "jump_up", context: `jump > ${ctx}` },
+          { keystroke: "ctrl-n", action: "jump_down", context: `jump > ${ctx}` },
+          { keystroke: "ctrl-p", action: "jump_up", context: `jump > ${ctx}` },
+          { keystroke: "enter", action: "jump_go", context: `jump > ${ctx}` },
+          { keystroke: "escape", action: "jump_close", context: `jump > ${ctx}` });
+      }
+      try { cx.bind_keys(keys); } catch {}
+    }
     this.input = InputState.new({ placeholder: "Search spaces, tasks, artifacts" });
     this.input.on("change", (_e, cx) => { this.sel = null; this.more.clear(); this.scroll.scroll_to_item(0, "top"); cx.notify(); });
     this.input.on("submit", (_e, cx) => this.go(this.current, cx));
@@ -132,6 +150,16 @@ export default class Jump extends View {
   }
 
   close() { this.input.release(); this.scroll.release(); }
+
+  // How well q matches these fields (core/fuzzy.js), null for not at all. Kept per query: the
+  // list is drawn on every frame, and with a slip allowed a miss tries each spelling.
+  score(q, ...fields) {
+    if (this.memo.q !== q) this.memo = { q, scores: new Map() };
+    const key = fields.map((f) => (f === undefined || f === null ? "" : String(f))).join("\u0001");
+    let sc = this.memo.scores.get(key);
+    if (sc === undefined) { sc = fuzzyScore(q, ...fields); this.memo.scores.set(key, sc); }
+    return sc;
+  }
 
   // One machine's task lists and artifacts (null: this computer's).
   async read(cx, machine) {
@@ -203,9 +231,10 @@ export default class Jump extends View {
     for (const s of spaces()) {
       const where = [remote ? machineName(s.machine) : null, tilde(s.folder) || "~"].filter(Boolean).join(" · ");
       const name = this.nameOf(s);
-      if (q && !matches(q, name, s.folder, tilde(s.folder), machineName(s.machine))) continue;
+      const score = q ? this.score(q, name, tilde(s.folder), s.folder, machineName(s.machine)) : 0;
+      if (score === null) continue;
       const at = Math.max(0, ...s.tabs.map((t) => t.changed_at ?? 0));
-      out.push({ kind: "space", key: `s:${s.id}`, id: s.id, icon: icons[s.id] ?? "#", label: name, sub: where, at, active: s.active, status: s.status });
+      out.push({ kind: "space", key: `s:${s.id}`, id: s.id, icon: icons[s.id] ?? "#", label: name, sub: where, at, score, active: s.active, status: s.status });
     }
     for (const [, lists] of this.lists) for (const list of lists) for (const task of list.tasks) {
       if (task.archived && !q) continue;
@@ -215,26 +244,30 @@ export default class Jump extends View {
       const live = task.state === "running" || task.state === "ready" ? this.live(list, task) : [];
       const status = this.status(task, live);
       const line = status === "working" ? task.progress?.text : status === "needs" ? task.waits ?? task.attention : task.summary;
-      if (q && !matches(q, ref, task.title, task.progress?.text, task.summary, task.waits, task.attention, space ? this.nameOf(space) : null, list.name, machineName(list.machine))) continue;
+      const score = q ? this.score(q, task.title, ref, space ? this.nameOf(space) : null, list.name, task.progress?.text, task.summary, task.waits, task.attention, machineName(list.machine)) : 0;
+      if (score === null) continue;
       const at = Math.max(0, ...[task.archived, task.done_at, task.ready_at, task.progress?.at, task.started, task.created].filter((x) => typeof x === "number"));
       out.push({ kind: "task", key: `t:${list.machine ?? ""}:${list.slug}#${task.id}`, ref, label: task.title, live, status, pct: task.progress?.done,
-        sub: [task.archived ? "Archived" : STATUS[status], line && capital(String(line).split("\n")[0]), place].filter(Boolean).join(" · "), at });
+        sub: [task.archived ? "Archived" : STATUS[status], line && capital(String(line).split("\n")[0]), place].filter(Boolean).join(" · "), at, score });
     }
     for (const [, arts] of this.arts) for (const a of arts) {
       const space = this.spaceAt(a.machine, a.folder ?? a.regFolder);
       const place = space ? this.nameOf(space) : a.regName ?? tilde(a.folder);
-      if (q && !matches(q, a.title, a.id, a.task, place, tilde(a.folder), remote ? machineName(a.machine) : null)) continue;
+      const score = q ? this.score(q, a.title || a.id, a.id, a.task, place, tilde(a.folder), remote ? machineName(a.machine) : null) : 0;
+      if (score === null) continue;
       out.push({ kind: "artifact", key: `a:${a.machine ?? ""}:${a.id}`, art: a, label: a.title || a.id,
-        sub: [a.task, place, remote ? machineName(a.machine) : null, `v${a.version ?? 1}`, ago(a.at)].filter(Boolean).join(" · "), at: a.at ?? 0 });
+        sub: [a.task, place, remote ? machineName(a.machine) : null, `v${a.version ?? 1}`, ago(a.at)].filter(Boolean).join(" · "), at: a.at ?? 0, score });
     }
     if (remote) for (const m of machines()) {
       const n = spaces().filter((s) => (s.machine ?? null) === (m.name ?? null)).length;
-      if (q && !matches(q, machineName(m.name))) continue;
+      const score = q ? this.score(q, machineName(m.name)) : 0;
+      if (score === null) continue;
       out.push({ kind: "machine", key: `m:${m.name ?? ""}`, name: m.name, label: machineName(m.name),
-        sub: [`${n} space${n === 1 ? "" : "s"}`, m.layout === "unavailable" ? "Offline" : null].filter(Boolean).join(" · "), at: 0 });
+        sub: [`${n} space${n === 1 ? "" : "s"}`, m.layout === "unavailable" ? "Offline" : null].filter(Boolean).join(" · "), at: 0, score });
     }
-    // Newest first in each group; spaces with no news keep the sidebar's order (a stable sort).
-    return out.sort((a, b) => b.at - a.at);
+    // Best match first when something is typed, newest first among equals and with nothing typed;
+    // spaces with no news keep the sidebar's order (a stable sort).
+    return out.sort((a, b) => b.score - a.score || b.at - a.at);
   }
 
   // The list as drawn: each non-empty group's heading, its rows, and "Show N more".
@@ -302,12 +335,15 @@ export default class Jump extends View {
     if (r.kind === "more") {
       return h_flex().w_full().h(MORE).px(6).child(
         h_flex().flex_1().h_full().px(8).items_center().rounded(RADIUS.card).text_size(TEXT.label).text_color(t.accent).cursor_pointer()
-          .when(on, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover))
+          .when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
           .child(`Show ${r.count} more`));
     }
+    // The selected row: the theme's selected colour and an accent bar at its left edge, so the
+    // keyboard's place shows in every theme (hover alone was near invisible in some).
     return h_flex().w_full().h(ROW).px(6).child(
-      h_flex().flex_1().min_w(0).h_full().px(8).gap(10).items_center().rounded(RADIUS.card).cursor_pointer()
-        .when(on, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover))
+      h_flex().flex_1().min_w(0).h_full().pl(3).pr(8).gap(10).items_center().rounded(RADIUS.card).cursor_pointer()
+        .when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover))
+        .child(div().w(3).h(22).flex_none().rounded(2).when(on, (el) => el.bg(t.accent)))
         .child(this.mark(r, t))
         .child(v_flex().flex_1().min_w(0).gap(2)
           .child(h_flex().min_w(0).gap(8).items_center()
@@ -345,7 +381,13 @@ export default class Jump extends View {
       : null;
     const sizes = rows.map((r) => (r.kind === "head" ? HEAD : r.kind === "more" ? MORE : ROW));
     const listH = Math.min(LIST_MAX, sizes.reduce((a, b) => a + b, 0));
+    const act = (fn) => (_e, cx) => { fn(cx); cx.stop_propagation(); };
     return v_flex().id("jump").w_full().bg(t.popover).text_size(13)
+      .key_context("jump")
+      .on_action("jump_down", act((cx) => move(1, cx)))
+      .on_action("jump_up", act((cx) => move(-1, cx)))
+      .on_action("jump_go", act((cx) => this.go(cur, cx)))
+      .on_action("jump_close", act(() => closeOverlay(props().overlay)))
       .on_key_down((e, cx) => {
         if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); return; }
         if (e.key === "down" || (e.key === "n" && e.modifiers.control)) move(1, cx);
