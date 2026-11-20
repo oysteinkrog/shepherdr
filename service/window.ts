@@ -36,10 +36,10 @@ function blockers(id: string, next: boolean, off: string[]) {
   return addons().filter((a) => !off.includes(a.id) && (a.needs ?? []).includes(id)).map((a) => a.id);
 }
 
-/** The Window page: its switches (value: a shared key's, on unless false) and the add-ons'. */
+/** The Window page: its switches (value: a shared key's, on unless false, or off unless true for def: false) and the add-ons'. */
 export function windowSection(value: (key: string) => unknown): SettingSection {
   const off = offList();
-  const rows: SettingRow[] = SWITCHES.map((s) => ({ label: s.title, key: `window.${s.id}`, value: value(s.key) === false ? "off" : "on", options: ["on", "off"], hint: s.about }));
+  const rows: SettingRow[] = SWITCHES.map((s) => ({ label: s.title, key: `window.${s.id}`, value: (s.def === false ? value(s.key) !== true : value(s.key) === false) ? "off" : "on", options: ["on", "off"], hint: s.about }));
   for (const a of addons().filter((x) => x.switch)) {
     const now = !off.includes(a.id), stop = blockers(a.id, !now, off);
     // one that others need, or that needs one that's off: its switch shows, greyed, and its line says which

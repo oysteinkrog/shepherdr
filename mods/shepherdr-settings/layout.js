@@ -26,7 +26,7 @@ import { SWITCHES, ADDONS, SECTIONS, INSIGHTS, addonAbout } from "./core/setting
 export { SWITCHES };
 
 // A switch kept in shared state: on unless set to false.
-const flag = (key) => ({ on: shared(key) !== false, flip: (on) => setShared(key, !on) });
+const flag = (key, def = true) => ({ on: def === false ? shared(key) === true : shared(key) !== false, flip: (on) => setShared(key, !on) });
 
 // Delete: here, then each linked machine; its line then says how it went.
 let deleted = null;
@@ -51,7 +51,7 @@ export function layoutSection(view, t) {
   return v_flex()
     .child(view.title(t, SECTIONS.find((s) => s.id === "window").title))
     .children(SWITCHES.map((s) => {
-      const st = flag(s.key);
+      const st = flag(s.key, s.def);
       return view.row(t, s.title, s.about, toggleSwitch(`layout-${s.id}`, st.on, () => st.flip(st.on)));
     }))
     .when(Boolean(m?.addons?.some((a) => a.switch)), (el) => el

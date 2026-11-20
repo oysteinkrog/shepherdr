@@ -291,7 +291,8 @@ export function homeAbout(on, st) {
 }
 
 // ---- Window ----------------------------------------------------------------------------------------------------
-// On/off switches kept in shared state (on unless false), then Add-ons (lib/addons.json's switches).
+// On/off switches kept in shared state (on unless false; one with def: false is off unless true), then
+// Add-ons (lib/addons.json's switches).
 export const SWITCHES = [
   { id: "tabs", title: "Show tabs", about: "The space's tabs, in the bar at the top. The bar's buttons stay either way.",
     key: "tabbar.tabs" },
@@ -308,7 +309,7 @@ export const SWITCHES = [
   { id: "helpers", title: "Show subagents above the chat box", about: "The agent's own subagents at work, listed over the box.",
     key: "chat.helpers" },
   { id: "assistant", title: "Assistant in new spaces", about: "A new space opens with its Assistant's chat, else a terminal.",
-    key: "coordinator.auto" },
+    key: "coordinator.auto", def: false },
 ];
 export const ADDONS = "Add-ons";
 // Usage insights' Delete, under its switch (the window's and the web's Settings > Window): every machine's log.

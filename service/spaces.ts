@@ -140,8 +140,8 @@ export async function newSpace(hub: Hub, opts: { machine: string | null; path: s
   const list = Array.isArray(opts.store.value("spaces")) ? opts.store.value("spaces") : [];
   await opts.store.set("spaces", [...list, { id, name, folder: abs, machine, at: Date.now() }]);
   await iconOf(machine ? `${machine}/${id}` : id);
-  // Settings › Window › Assistant in new spaces off: it opens without one
-  if (opts.store.value("coordinator.auto") === false) return machine ? `${machine}/${id}` : id;
+  // Settings › Window › Assistant in new spaces off (the default; core/settings.js): it opens without one
+  if (opts.store.value("coordinator.auto") !== true) return machine ? `${machine}/${id}` : id;
   const t = await execTemplate(hub, "assistant", machine, opts.pick?.(machine ? `${machine}/${id}` : id) ?? null);
   await run(["hc", "run", "--bg", "--keep", "--no-parent", ...(machine ? ["--on", machine] : []), "--cwd", abs,
     "--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${id}`, "--label", `herdr.space=${id}`, t.name]);
